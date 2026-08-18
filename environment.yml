@@ -1,0 +1,12 @@
+name: dipa-metagene
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - gffutils
+  - pybigwig
+  - matplotlib
+  - pytest
