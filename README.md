@@ -13,10 +13,6 @@ The script:
 6. Calculates treatment-versus-control log2 fold-change.
 7. Draws one line per treatment with replicate standard deviation shading.
 
-The code is intentionally written as a readable script. It uses descriptive
-variables, explicit validation, and only a small number of helpers for work
-that repeats across genes or samples.
-
 ## Important Interpretation
 
 ### RED is used for event selection

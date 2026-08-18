@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
 Create exon-only metagene profiles around significant UP dIPAs.
-
-The script intentionally favors clear, sequential code over compact code. The
-few helper functions below are used for operations that repeat for many genes,
-exons, samples, or output chunks.
 """
 
 import argparse
@@ -85,7 +81,7 @@ COLORBLIND_COLORS = [
 
 
 def add_exclusion(excluded_rows, source_row, stage, reason, details=""):
-    """Add one row to the QC table without leaking private helper columns."""
+    """Add one row to the exclusion QC table."""
 
     if hasattr(source_row, "to_dict"):
         source_values = source_row.to_dict()
@@ -145,12 +141,7 @@ def create_or_open_gtf_database(gtf_path, database_path, rebuild_database):
 
 
 def prepare_cdna_model(apa_row, transcript, gtf_database, min_side_bp):
-    """
-    Build the upstream and downstream exon lists for one selected dIPA.
-
-    This operation repeats for every selected gene, so keeping it in one
-    function makes the strand and coordinate rules easier to inspect and test.
-    """
+    """Build upstream and downstream exon lists for one selected dIPA."""
 
     transcript_exons = list(
         gtf_database.children(
@@ -364,7 +355,7 @@ def extract_oriented_exon_values(
     gene_model,
     exons,
 ):
-    """Extract, validate, and orient a repeated list of transcript exons."""
+    """Extract, validate, and orient transcript exon signal."""
 
     signal_parts = []
 
@@ -499,7 +490,7 @@ def write_per_gene_log2fc(
     normalized_positions,
     write_header,
 ):
-    """Write large gene-by-position output in readable, memory-bounded chunks."""
+    """Write gene-by-position output in memory-bounded chunks."""
 
     genes_per_output_chunk = 500
     total_positions = len(position_indexes)
@@ -572,7 +563,7 @@ def get_package_versions():
 
 
 def parse_arguments():
-    """Describe the command-line interface in one place."""
+    """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(
         description=(

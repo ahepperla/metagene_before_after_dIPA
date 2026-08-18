@@ -159,7 +159,7 @@ def open_synthetic_gtf_database(tmp_path):
 
 
 def make_apa_series(gene_symbol, pas_id, dipa_position, red=5.0):
-    """Create the helper fields expected after APA table validation."""
+    """Create an APA row after numeric and coordinate validation."""
 
     return pd.Series(
         {
