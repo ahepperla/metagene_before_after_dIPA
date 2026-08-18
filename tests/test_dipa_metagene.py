@@ -889,8 +889,9 @@ def test_nonfinite_pseudocount_is_rejected(
         (
             "p_adj",
             "inf",
-            "contains an infinite or missing numeric value",
+            "contains an infinite numeric value",
         ),
+        ("p_adj", "not_a_number", "contains a nonnumeric value"),
     ],
 )
 def test_invalid_apalyzer_numeric_values_are_rejected(
@@ -914,6 +915,43 @@ def test_invalid_apalyzer_numeric_values_are_rejected(
 
     assert completed.returncode == 1
     assert expected_message in completed.stderr
+
+
+def test_missing_adjusted_pvalue_is_excluded(tmp_path):
+    apa_path = tmp_path / "apa.tsv"
+    write_apa_table(apa_path)
+    apa_table = pd.read_csv(apa_path, sep="\t", dtype=str)
+    apa_table.loc[0, "p_adj"] = "NA"
+    apa_table.to_csv(apa_path, sep="\t", index=False)
+
+    sample_rows = make_basic_paired_sample_rows(tmp_path)
+    completed, output_path = run_script(
+        tmp_path,
+        sample_rows,
+        "missing_adjusted_pvalue_output",
+    )
+
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+
+    excluded = pd.read_csv(
+        output_path / "excluded_genes.tsv",
+        sep="\t",
+        keep_default_na=False,
+    )
+    missing_rows = excluded[
+        excluded["exclusion_reason"] == "missing_adjusted_pvalue"
+    ]
+    assert len(missing_rows) == 1
+    assert missing_rows.iloc[0]["p_adj"] == "NA"
+
+    selected = pd.read_csv(
+        output_path / "selected_up_genes.tsv",
+        sep="\t",
+    )
+    selected_plus = selected[
+        selected["gene_symbol"] == "GenePlus"
+    ].iloc[0]
+    assert selected_plus["RED"] == pytest.approx(2.0)
 
 
 def test_full_paired_run_with_multiple_treatments(tmp_path):

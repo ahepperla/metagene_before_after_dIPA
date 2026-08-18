@@ -107,6 +107,12 @@ RED > 0
 pas_coordinate_match == TRUE
 ```
 
+Rows with a missing `p_adj`, including `NA`, `NaN`, `N/A`, `.`, or a blank
+cell, are excluded and recorded as `missing_adjusted_pvalue` in
+`excluded_genes.tsv`. They do not stop the rest of the run. Infinite,
+out-of-range, or unrecognized nonnumeric adjusted p-values still cause an
+error.
+
 It uses the largest positive RED for genes with multiple qualifying sites.
 Ties are resolved by the smallest adjusted p-value and then the smallest
 genomic start coordinate.

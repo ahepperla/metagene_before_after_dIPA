@@ -71,6 +71,15 @@ BIGWIG_COLUMNS = [
 ]
 
 TRUE_TEXT_VALUES = {"true", "t", "1", "yes", "y"}
+MISSING_NUMERIC_TEXT_VALUES = {
+    "",
+    ".",
+    "na",
+    "nan",
+    "n/a",
+    "none",
+    "null",
+}
 
 COLORBLIND_COLORS = [
     "#0173B2",
@@ -846,7 +855,6 @@ def main():
 
     numeric_apa_columns = {
         "RED": "_RED_numeric",
-        "p_adj": "_p_adj_numeric",
         "start": "_start_numeric",
         "end": "_end_numeric",
         "browser_start_1based": "_browser_start_numeric",
@@ -868,6 +876,41 @@ def main():
                 f"APAlyzer column {input_column} contains an infinite or "
                 "missing numeric value."
             )
+
+    adjusted_pvalue_text = apa_results["p_adj"].astype(str).str.strip()
+    apa_results["_p_adj_missing"] = (
+        adjusted_pvalue_text.str.lower().isin(
+            MISSING_NUMERIC_TEXT_VALUES
+        )
+    )
+    apa_results["_p_adj_numeric"] = pd.to_numeric(
+        adjusted_pvalue_text,
+        errors="coerce",
+    )
+
+    invalid_adjusted_pvalue_text = (
+        apa_results["_p_adj_numeric"].isna()
+        & ~apa_results["_p_adj_missing"]
+    )
+    if invalid_adjusted_pvalue_text.any():
+        invalid_values = sorted(
+            adjusted_pvalue_text.loc[
+                invalid_adjusted_pvalue_text
+            ].unique()
+        )
+        raise ValueError(
+            "APAlyzer column p_adj contains a nonnumeric value. "
+            "Invalid values: "
+            + ", ".join(invalid_values[:10])
+        )
+
+    infinite_adjusted_pvalues = np.isinf(
+        apa_results["_p_adj_numeric"].to_numpy()
+    )
+    if infinite_adjusted_pvalues.any():
+        raise ValueError(
+            "APAlyzer column p_adj contains an infinite numeric value."
+        )
 
     invalid_adjusted_pvalues = (
         (apa_results["_p_adj_numeric"] < 0)
@@ -925,6 +968,16 @@ def main():
     qualifying_indexes = []
 
     for row_index, row in apa_results.iterrows():
+        if bool(row["_p_adj_missing"]):
+            add_exclusion(
+                excluded_rows,
+                row,
+                "APA_filtering",
+                "missing_adjusted_pvalue",
+                f"p_adj={row['p_adj']}",
+            )
+            continue
+
         if float(row["_p_adj_numeric"]) > args.adjusted_pvalue:
             add_exclusion(
                 excluded_rows,
