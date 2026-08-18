@@ -56,13 +56,18 @@ REQUIRED_APA_COLUMNS = [
     "pas_coordinate_match",
 ]
 
-REQUIRED_SAMPLE_COLUMNS = [
+REQUIRED_SAMPLE_METADATA_COLUMNS = [
     "sample_id",
     "condition",
     "replicate",
     "role",
     "pair_id",
+]
+
+BIGWIG_COLUMNS = [
     "bigwig",
+    "plus_bigwig",
+    "minus_bigwig",
 ]
 
 TRUE_TEXT_VALUES = {"true", "t", "1", "yes", "y"}
@@ -367,25 +372,59 @@ def prepare_cdna_model(apa_row, transcript, gtf_database, min_side_bp):
     return gene_model, None, ""
 
 
+def get_sample_bigwig_paths(sample_record):
+    """Return the combined or strand-specific BigWig paths for one sample."""
+
+    if sample_record["_bigwig_mode"] == "combined":
+        return {
+            "combined": sample_record["_combined_bigwig_path"],
+        }
+
+    return {
+        "plus": sample_record["_plus_bigwig_path"],
+        "minus": sample_record["_minus_bigwig_path"],
+    }
+
+
+def get_bigwig_track_for_strand(sample_record, gene_strand):
+    """Choose the combined, plus, or minus track for one annotated gene."""
+
+    if sample_record["_bigwig_mode"] == "combined":
+        return "combined"
+    if gene_strand == "+":
+        return "plus"
+    if gene_strand == "-":
+        return "minus"
+    raise ValueError(f"Unsupported transcript strand: {gene_strand}")
+
+
 def inspect_bigwig(sample_record):
-    """Open one BigWig and return chromosome lengths for preflight checks."""
+    """Return chromosome lengths for every BigWig used by one sample."""
 
-    bigwig_path = sample_record["_bigwig_path"]
-    try:
-        with pyBigWig.open(bigwig_path) as bigwig_file:
-            chromosome_lengths = bigwig_file.chroms()
-    except Exception as error:
-        raise RuntimeError(
-            f"Could not open BigWig for sample "
-            f"{sample_record['sample_id']}: {bigwig_path}. {error}"
-        ) from error
+    chromosome_lengths_by_track = {}
 
-    if not chromosome_lengths:
-        raise RuntimeError(
-            f"BigWig contains no chromosome information: {bigwig_path}"
-        )
+    for track_name, bigwig_path in get_sample_bigwig_paths(
+        sample_record
+    ).items():
+        try:
+            with pyBigWig.open(bigwig_path) as bigwig_file:
+                chromosome_lengths = bigwig_file.chroms()
+        except Exception as error:
+            raise RuntimeError(
+                f"Could not open {track_name} BigWig for sample "
+                f"{sample_record['sample_id']}: {bigwig_path}. {error}"
+            ) from error
 
-    return sample_record["sample_id"], chromosome_lengths
+        if not chromosome_lengths:
+            raise RuntimeError(
+                f"{track_name.capitalize()} BigWig contains no chromosome "
+                f"information for sample {sample_record['sample_id']}: "
+                f"{bigwig_path}"
+            )
+
+        chromosome_lengths_by_track[track_name] = chromosome_lengths
+
+    return sample_record["sample_id"], chromosome_lengths_by_track
 
 
 def bin_cdna_signal(cdna_values, bins_per_side):
@@ -450,36 +489,46 @@ def extract_oriented_exon_values(
 
 def extract_sample_profiles(sample_record, gene_models, bins_per_side):
     """
-    Extract and bin every retained gene for one BigWig sample.
+    Extract and bin every retained gene for one sample.
 
-    Each thread calls this function for one sample and opens its own BigWig
-    handle. BigWig handles are never shared between threads.
+    Each thread opens the sample's combined BigWig or its separate plus and
+    minus BigWigs. BigWig handles are never shared between threads.
     """
 
     sample_id = sample_record["sample_id"]
-    bigwig_path = sample_record["_bigwig_path"]
+    bigwig_paths = get_sample_bigwig_paths(sample_record)
     total_bins = bins_per_side * 2
     sample_profiles = np.empty(
         (len(gene_models), total_bins),
         dtype=float,
     )
+    bigwig_files = {}
 
     try:
-        bigwig_file = pyBigWig.open(bigwig_path)
-    except Exception as error:
-        raise RuntimeError(
-            f"Could not open BigWig for sample {sample_id}: "
-            f"{bigwig_path}. {error}"
-        ) from error
+        for track_name, bigwig_path in bigwig_paths.items():
+            try:
+                bigwig_file = pyBigWig.open(bigwig_path)
+            except Exception as error:
+                raise RuntimeError(
+                    f"Could not open {track_name} BigWig for sample "
+                    f"{sample_id}: {bigwig_path}. {error}"
+                ) from error
 
-    if bigwig_file is None:
-        raise RuntimeError(
-            f"pyBigWig could not open the file for sample {sample_id}: "
-            f"{bigwig_path}"
-        )
+            if bigwig_file is None:
+                raise RuntimeError(
+                    f"pyBigWig could not open the {track_name} file for "
+                    f"sample {sample_id}: {bigwig_path}"
+                )
 
-    try:
+            bigwig_files[track_name] = bigwig_file
+
         for gene_index, gene_model in enumerate(gene_models):
+            track_name = get_bigwig_track_for_strand(
+                sample_record,
+                gene_model["strand"],
+            )
+            bigwig_file = bigwig_files[track_name]
+
             upstream_signal = extract_oriented_exon_values(
                 bigwig_file,
                 sample_id,
@@ -506,7 +555,8 @@ def extract_sample_profiles(sample_record, gene_models, bins_per_side):
                 [upstream_bins, downstream_bins]
             )
     finally:
-        bigwig_file.close()
+        for bigwig_file in bigwig_files.values():
+            bigwig_file.close()
 
     return sample_id, sample_profiles
 
@@ -1199,7 +1249,7 @@ def main():
 
     missing_sample_columns = [
         column
-        for column in REQUIRED_SAMPLE_COLUMNS
+        for column in REQUIRED_SAMPLE_METADATA_COLUMNS
         if column not in sample_sheet.columns
     ]
     if missing_sample_columns:
@@ -1208,7 +1258,11 @@ def main():
             + ", ".join(missing_sample_columns)
         )
 
-    for text_column in REQUIRED_SAMPLE_COLUMNS:
+    for bigwig_column in BIGWIG_COLUMNS:
+        if bigwig_column not in sample_sheet.columns:
+            sample_sheet[bigwig_column] = ""
+
+    for text_column in REQUIRED_SAMPLE_METADATA_COLUMNS + BIGWIG_COLUMNS:
         sample_sheet[text_column] = (
             sample_sheet[text_column].astype(str).str.strip()
         )
@@ -1238,6 +1292,37 @@ def main():
             "Sample sheet role must be control or treatment. Invalid values: "
             + ", ".join(invalid_roles)
         )
+
+    bigwig_modes = []
+    for _, sample_row in sample_sheet.iterrows():
+        has_combined_bigwig = bool(sample_row["bigwig"])
+        has_plus_bigwig = bool(sample_row["plus_bigwig"])
+        has_minus_bigwig = bool(sample_row["minus_bigwig"])
+        sample_id = sample_row["sample_id"]
+
+        if has_combined_bigwig and (
+            has_plus_bigwig or has_minus_bigwig
+        ):
+            raise ValueError(
+                f"Sample {sample_id} provides both a combined BigWig and a "
+                "strand-specific BigWig. Use either bigwig or the "
+                "plus_bigwig/minus_bigwig pair."
+            )
+
+        if has_combined_bigwig:
+            bigwig_modes.append("combined")
+            continue
+
+        if has_plus_bigwig and has_minus_bigwig:
+            bigwig_modes.append("strand_specific")
+            continue
+
+        raise ValueError(
+            f"Sample {sample_id} must provide either bigwig or both "
+            "plus_bigwig and minus_bigwig."
+        )
+
+    sample_sheet["_bigwig_mode"] = bigwig_modes
 
     duplicated_replicates = sample_sheet.duplicated(
         subset=["role", "condition", "replicate"],
@@ -1274,19 +1359,34 @@ def main():
         raise ValueError("Sample sheet contains no treatment samples.")
 
     sample_sheet_directory = sample_sheet_path.parent
-    resolved_bigwig_paths = []
-    for bigwig_text in sample_sheet["bigwig"]:
-        bigwig_path = Path(bigwig_text).expanduser()
-        if not bigwig_path.is_absolute():
-            bigwig_path = sample_sheet_directory / bigwig_path
-        bigwig_path = bigwig_path.resolve()
-        if not bigwig_path.is_file():
-            raise FileNotFoundError(
-                f"BigWig file does not exist: {bigwig_path}"
-            )
-        resolved_bigwig_paths.append(str(bigwig_path))
+    bigwig_path_columns = {
+        "bigwig": "_combined_bigwig_path",
+        "plus_bigwig": "_plus_bigwig_path",
+        "minus_bigwig": "_minus_bigwig_path",
+    }
 
-    sample_sheet["_bigwig_path"] = resolved_bigwig_paths
+    for bigwig_column, path_column in bigwig_path_columns.items():
+        resolved_bigwig_paths = []
+
+        for bigwig_text in sample_sheet[bigwig_column]:
+            if not bigwig_text:
+                resolved_bigwig_paths.append("")
+                continue
+
+            bigwig_path = Path(bigwig_text).expanduser()
+            if not bigwig_path.is_absolute():
+                bigwig_path = sample_sheet_directory / bigwig_path
+            bigwig_path = bigwig_path.resolve()
+
+            if not bigwig_path.is_file():
+                raise FileNotFoundError(
+                    f"BigWig file does not exist: {bigwig_path}"
+                )
+
+            resolved_bigwig_paths.append(str(bigwig_path))
+
+        sample_sheet[path_column] = resolved_bigwig_paths
+
     control_samples = sample_sheet[sample_sheet["role"] == "control"]
     treatment_samples = sample_sheet[sample_sheet["role"] == "treatment"]
 
@@ -1351,8 +1451,10 @@ def main():
             for sample_record in sample_records
         }
         for completed_future in as_completed(inspection_futures):
-            sample_id, chromosome_lengths = completed_future.result()
-            bigwig_chromosomes[sample_id] = chromosome_lengths
+            sample_id, chromosome_lengths_by_track = (
+                completed_future.result()
+            )
+            bigwig_chromosomes[sample_id] = chromosome_lengths_by_track
 
     compatible_gene_models = []
     for gene_model in gene_models:
@@ -1368,13 +1470,20 @@ def main():
 
         for sample_record in sample_records:
             sample_id = sample_record["sample_id"]
-            chromosome_lengths = bigwig_chromosomes[sample_id]
+            track_name = get_bigwig_track_for_strand(
+                sample_record,
+                gene_model["strand"],
+            )
+            chromosome_lengths = bigwig_chromosomes[sample_id][track_name]
             chromosome = gene_model["chromosome"]
 
             if chromosome not in chromosome_lengths:
                 compatibility_problem = (
                     "bigwig_chromosome_missing",
-                    f"sample={sample_id}; chromosome={chromosome}",
+                    (
+                        f"sample={sample_id}; track={track_name}; "
+                        f"chromosome={chromosome}"
+                    ),
                 )
                 break
 
@@ -1382,7 +1491,8 @@ def main():
                 compatibility_problem = (
                     "bigwig_coordinate_out_of_bounds",
                     (
-                        f"sample={sample_id}; chromosome={chromosome}; "
+                        f"sample={sample_id}; track={track_name}; "
+                        f"chromosome={chromosome}; "
                         f"required_end={maximum_exon_end}; "
                         f"chromosome_length={chromosome_lengths[chromosome]}"
                     ),
@@ -1680,6 +1790,7 @@ def main():
     axis.grid(axis="y", color="#DDDDDD", linewidth=0.6)
 
     replicate_counts = treatment_samples.groupby("condition").size()
+    bigwig_mode_counts = sample_sheet["_bigwig_mode"].value_counts()
     replicate_text = ", ".join(
         f"{condition}: {replicate_counts[condition]} replicate(s)"
         for condition in treatment_condition_order
@@ -1750,6 +1861,12 @@ def main():
             "requested_threads": args.threads,
             "threads_used": thread_count,
             "paired_controls": paired_controls,
+            "combined_bigwig_samples": int(
+                bigwig_mode_counts.get("combined", 0)
+            ),
+            "strand_specific_bigwig_samples": int(
+                bigwig_mode_counts.get("strand_specific", 0)
+            ),
         },
         "filtering_counts": filtering_counts,
         "treatments": {

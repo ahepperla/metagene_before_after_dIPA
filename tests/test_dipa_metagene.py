@@ -683,7 +683,8 @@ def test_minus_strand_bigwig_signal_is_reversed(tmp_path):
     write_position_bigwig(bigwig_path)
     sample_record = {
         "sample_id": "sample",
-        "_bigwig_path": str(bigwig_path),
+        "_bigwig_mode": "combined",
+        "_combined_bigwig_path": str(bigwig_path),
     }
 
     _, profiles = dipa_metagene.extract_sample_profiles(
@@ -695,6 +696,49 @@ def test_minus_strand_bigwig_signal_is_reversed(tmp_path):
     assert profiles.shape == (1, 4)
     assert profiles[0, 0] > profiles[0, 1]
     assert profiles[0, 2] > profiles[0, 3]
+
+
+def test_strand_specific_bigwigs_follow_annotation_strand(tmp_path):
+    _, database = open_synthetic_gtf_database(tmp_path)
+
+    plus_row = make_apa_series("GenePlus", "chr1:+:old", 350)
+    plus_model, reason, _ = dipa_metagene.prepare_cdna_model(
+        plus_row,
+        database["TX_PLUS"],
+        database,
+        2,
+    )
+    assert reason is None
+
+    minus_row = make_apa_series("GeneMinus", "chr1:-:old", 2350)
+    minus_model, reason, _ = dipa_metagene.prepare_cdna_model(
+        minus_row,
+        database["TX_MINUS"],
+        database,
+        2,
+    )
+    assert reason is None
+
+    plus_bigwig_path = tmp_path / "plus.bw"
+    minus_bigwig_path = tmp_path / "minus.bw"
+    write_constant_bigwig(plus_bigwig_path, 2)
+    write_constant_bigwig(minus_bigwig_path, 7)
+
+    sample_record = {
+        "sample_id": "stranded_sample",
+        "_bigwig_mode": "strand_specific",
+        "_plus_bigwig_path": str(plus_bigwig_path),
+        "_minus_bigwig_path": str(minus_bigwig_path),
+    }
+
+    _, profiles = dipa_metagene.extract_sample_profiles(
+        sample_record,
+        [plus_model, minus_model],
+        2,
+    )
+
+    assert np.allclose(profiles[0], 2)
+    assert np.allclose(profiles[1], 7)
 
 
 def test_negative_bigwig_signal_is_rejected(tmp_path):
@@ -712,7 +756,8 @@ def test_negative_bigwig_signal_is_rejected(tmp_path):
     write_negative_bigwig(bigwig_path)
     sample_record = {
         "sample_id": "negative_sample",
-        "_bigwig_path": str(bigwig_path),
+        "_bigwig_mode": "combined",
+        "_combined_bigwig_path": str(bigwig_path),
     }
 
     with pytest.raises(ValueError, match="Negative BigWig value"):
@@ -738,7 +783,8 @@ def test_infinite_bigwig_signal_is_rejected(tmp_path):
     write_infinite_bigwig(bigwig_path)
     sample_record = {
         "sample_id": "infinite_sample",
-        "_bigwig_path": str(bigwig_path),
+        "_bigwig_mode": "combined",
+        "_combined_bigwig_path": str(bigwig_path),
     }
 
     with pytest.raises(ValueError, match="Infinite BigWig value"):
@@ -781,6 +827,40 @@ def test_blank_and_duplicate_replicates_are_rejected(tmp_path):
     )
     assert duplicate_run.returncode == 1
     assert "Replicate labels must be unique" in duplicate_run.stderr
+
+
+def test_invalid_bigwig_column_combinations_are_rejected(tmp_path):
+    plus_only_rows = make_basic_paired_sample_rows(tmp_path)
+    write_constant_bigwig(tmp_path / "treatment_plus.bw", 2)
+    plus_only_rows[1]["bigwig"] = ""
+    plus_only_rows[1]["plus_bigwig"] = "treatment_plus.bw"
+
+    plus_only_run, _ = run_script(
+        tmp_path,
+        plus_only_rows,
+        "plus_only_output",
+    )
+    assert plus_only_run.returncode == 1
+    assert (
+        "either bigwig or both plus_bigwig and minus_bigwig"
+        in plus_only_run.stderr
+    )
+
+    combined_and_stranded_rows = make_basic_paired_sample_rows(tmp_path)
+    write_constant_bigwig(tmp_path / "treatment_minus.bw", 2)
+    combined_and_stranded_rows[1]["plus_bigwig"] = "treatment_plus.bw"
+    combined_and_stranded_rows[1]["minus_bigwig"] = "treatment_minus.bw"
+
+    combined_and_stranded_run, _ = run_script(
+        tmp_path,
+        combined_and_stranded_rows,
+        "combined_and_stranded_output",
+    )
+    assert combined_and_stranded_run.returncode == 1
+    assert (
+        "both a combined BigWig and a strand-specific BigWig"
+        in combined_and_stranded_run.stderr
+    )
 
 
 @pytest.mark.parametrize("invalid_pseudocount", ["nan", "inf"])
@@ -1030,3 +1110,55 @@ def test_full_unpaired_run_uses_mean_control(tmp_path):
         (output_path / "run_parameters.json").read_text(encoding="utf-8")
     )
     assert run_parameters["parameters"]["paired_controls"] is False
+
+
+def test_full_run_accepts_mixed_bigwig_input_modes(tmp_path):
+    write_constant_bigwig(tmp_path / "mixed_control.bw", 1)
+    write_constant_bigwig(tmp_path / "mixed_treatment_plus.bw", 3)
+    write_constant_bigwig(tmp_path / "mixed_treatment_minus.bw", 3)
+
+    sample_rows = [
+        {
+            "sample_id": "control_1",
+            "condition": "control",
+            "replicate": "1",
+            "role": "control",
+            "pair_id": "1",
+            "bigwig": "mixed_control.bw",
+            "plus_bigwig": "",
+            "minus_bigwig": "",
+        },
+        {
+            "sample_id": "drugA_1",
+            "condition": "drugA",
+            "replicate": "1",
+            "role": "treatment",
+            "pair_id": "1",
+            "bigwig": "",
+            "plus_bigwig": "mixed_treatment_plus.bw",
+            "minus_bigwig": "mixed_treatment_minus.bw",
+        },
+    ]
+
+    completed, output_path = run_script(
+        tmp_path,
+        sample_rows,
+        "mixed_bigwig_output",
+    )
+
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+
+    summary = pd.read_csv(
+        output_path / "treatment_summary.tsv",
+        sep="\t",
+    )
+    assert np.allclose(summary["mean_log2fc"], 1.0)
+
+    run_parameters = json.loads(
+        (output_path / "run_parameters.json").read_text(encoding="utf-8")
+    )
+    assert run_parameters["parameters"]["combined_bigwig_samples"] == 1
+    assert (
+        run_parameters["parameters"]["strand_specific_bigwig_samples"]
+        == 1
+    )

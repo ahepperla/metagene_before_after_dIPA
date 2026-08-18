@@ -9,7 +9,7 @@ The script:
 2. Chooses one dIPA per gene.
 3. Uses the transcript tagged `Ensembl_canonical` in a GENCODE GTF.
 4. Builds cDNA profiles from exons rather than the full genomic gene body.
-5. Reads normalized signal from per-replicate BigWigs.
+5. Reads normalized signal from combined or strand-specific BigWigs.
 6. Calculates treatment-versus-control log2 fold-change.
 7. Draws one line per treatment with replicate standard deviation shading.
 
@@ -161,7 +161,12 @@ database at a specific shared path with `--gtf-db`.
 
 ### Sample sheet
 
-The sample sheet is tab-separated:
+The sample sheet is tab-separated. Each sample can use either one combined
+BigWig or a pair of strand-specific BigWigs.
+
+#### Combined BigWigs
+
+Use the `bigwig` column when one file contains signal for both strands:
 
 ```text
 sample_id	condition	replicate	role	pair_id	bigwig
@@ -172,6 +177,40 @@ drugA_2	drugA	2	treatment	2	/path/drugA_2.bw
 drugB_1	drugB	1	treatment	1	/path/drugB_1.bw
 drugB_2	drugB	2	treatment	2	/path/drugB_2.bw
 ```
+
+#### Strand-specific BigWigs
+
+Use `plus_bigwig` and `minus_bigwig` when forward and reverse signal are in
+separate files:
+
+```text
+sample_id	condition	replicate	role	pair_id	plus_bigwig	minus_bigwig
+control_1	control	1	control	1	/path/control_1.forward.bw	/path/control_1.reverse.bw
+control_2	control	2	control	2	/path/control_2.forward.bw	/path/control_2.reverse.bw
+drugA_1	drugA	1	treatment	1	/path/drugA_1.forward.bw	/path/drugA_1.reverse.bw
+drugA_2	drugA	2	treatment	2	/path/drugA_2.forward.bw	/path/drugA_2.reverse.bw
+```
+
+The canonical transcript strand determines which file is read:
+
+- `+` transcript: `plus_bigwig`
+- `-` transcript: `minus_bigwig`
+
+Minus-strand signal is then reversed into transcript 5-prime to 3-prime order.
+
+#### Mixing input modes
+
+Combined and strand-specific samples can appear in the same sheet. Include
+all three BigWig columns and leave the unused cells blank:
+
+```text
+bigwig	plus_bigwig	minus_bigwig	sample_id	condition	replicate	role	pair_id
+/path/control_1.bw			control_1	control	1	control	1
+	/path/drugA_1.forward.bw	/path/drugA_1.reverse.bw	drugA_1	drugA	1	treatment	1
+```
+
+Every row must provide either `bigwig`, or both `plus_bigwig` and
+`minus_bigwig`. A row cannot use both modes.
 
 `role` must be `control` or `treatment`. Multiple treatment conditions are
 allowed.
@@ -208,7 +247,8 @@ BigWigs must contain:
 - comparable normalization across samples
 
 Signed tracks or tracks that are already log2 transformed cannot be used with
-the ratio calculation in this script.
+the ratio calculation in this script. The minus-strand BigWig must contain
+positive signal magnitudes rather than mirrored negative values.
 
 Missing BigWig positions (`NaN`) are treated as zero. Positive or negative
 infinity causes the run to stop.
@@ -252,7 +292,8 @@ Run `python dipa_metagene.py --help` for all options.
 ## Threading on an HPC
 
 BigWig extraction is parallelized by sample with `ThreadPoolExecutor`.
-Each thread opens its own BigWig handle; handles are never shared.
+Each thread opens its sample's combined BigWig or its plus and minus BigWigs.
+Handles are never shared between threads.
 
 The maximum useful thread count is the number of BigWig samples. Requesting 32
 threads for 6 samples will use 6 threads.
@@ -328,7 +369,7 @@ The output directory contains:
 ### Reproducibility
 
 - `run_parameters.json`: paths, parameters, package versions, thread count,
-  treatment counts, and filtering totals
+  BigWig input-mode counts, treatment counts, and filtering totals
 - `*.gffutils.db`: reusable GTF database unless `--gtf-db` points elsewhere
 - `*.gffutils.db.metadata.json`: source GTF path, size, and SHA-256 checksum
 
@@ -361,8 +402,14 @@ than stretched to artificial resolution.
 
 ### Negative BigWig value
 
-The BigWig is signed or transformed. Use comparable, nonnegative,
-linear-normalized signal tracks.
+The BigWig is signed or transformed. This includes minus-strand tracks stored
+as mirrored negative values. Use comparable, nonnegative, linear-normalized
+signal tracks.
+
+### Invalid BigWig columns
+
+Each sample row must provide either one `bigwig`, or both `plus_bigwig` and
+`minus_bigwig`. Do not fill both input modes for the same sample.
 
 ### Chromosome missing from BigWig
 
