@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import gffutils
+import matplotlib.image as mpimg
 import numpy as np
 import pandas as pd
 import pyBigWig
@@ -1200,3 +1201,58 @@ def test_full_run_accepts_mixed_bigwig_input_modes(tmp_path):
         run_parameters["parameters"]["strand_specific_bigwig_samples"]
         == 1
     )
+
+
+def test_plot_footer_fits_with_multiple_treatments(tmp_path):
+    write_constant_bigwig(tmp_path / "footer_control.bw", 1)
+
+    sample_rows = [
+        {
+            "sample_id": "control_1",
+            "condition": "control",
+            "replicate": "1",
+            "role": "control",
+            "pair_id": "1",
+            "bigwig": "footer_control.bw",
+        }
+    ]
+
+    treatment_conditions = [
+        "AS_PHA_4hr",
+        "AS_PHA_8hr",
+        "AS_PHA_24hr",
+        "AS_PHA_48hr",
+    ]
+    for condition in treatment_conditions:
+        bigwig_name = f"{condition}.bw"
+        write_constant_bigwig(tmp_path / bigwig_name, 3)
+        sample_rows.append(
+            {
+                "sample_id": f"{condition}_1",
+                "condition": condition,
+                "replicate": "1",
+                "role": "treatment",
+                "pair_id": "1",
+                "bigwig": bigwig_name,
+            }
+        )
+
+    completed, output_path = run_script(
+        tmp_path,
+        sample_rows,
+        "footer_output",
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+
+    plot_image = mpimg.imread(output_path / "combined_metagene.png")
+    bottom_region = plot_image[
+        int(plot_image.shape[0] * 0.93) :,
+        :,
+        :3,
+    ]
+    text_pixels = np.any(bottom_region < 0.85, axis=2)
+    horizontal_positions = np.where(text_pixels)[1]
+
+    assert len(horizontal_positions) > 0
+    assert horizontal_positions.min() > 5
+    assert horizontal_positions.max() < plot_image.shape[1] - 6

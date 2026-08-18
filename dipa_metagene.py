@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import tempfile
+import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -1844,23 +1845,45 @@ def main():
 
     replicate_counts = treatment_samples.groupby("condition").size()
     bigwig_mode_counts = sample_sheet["_bigwig_mode"].value_counts()
-    replicate_text = ", ".join(
-        f"{condition}: {replicate_counts[condition]} replicate(s)"
+    replicate_entries = [
+        f"{condition}: n={replicate_counts[condition]}"
         for condition in treatment_condition_order
+    ]
+    replicate_text = "Replicates: " + "; ".join(replicate_entries)
+    wrapped_replicate_text = textwrap.fill(
+        replicate_text,
+        width=105,
+        break_long_words=True,
+        break_on_hyphens=False,
     )
+    footer_text = (
+        f"{len(gene_models)} genes; shading = +/- 1 SD\n"
+        f"{wrapped_replicate_text}"
+    )
+    footer_line_count = footer_text.count("\n") + 1
+    footer_layout_height = 0.055 + (0.025 * footer_line_count)
+
     figure.text(
         0.5,
-        0.01,
-        f"{len(gene_models)} genes; {replicate_text}; shading = +/- 1 SD",
+        0.012,
+        footer_text,
         ha="center",
+        va="bottom",
         fontsize=9,
+        linespacing=1.25,
     )
-    figure.tight_layout(rect=[0, 0.04, 1, 1])
+    figure.tight_layout(rect=[0, footer_layout_height, 1, 1])
     figure.savefig(
         output_directory / "combined_metagene.png",
         dpi=300,
+        bbox_inches="tight",
+        pad_inches=0.1,
     )
-    figure.savefig(output_directory / "combined_metagene.pdf")
+    figure.savefig(
+        output_directory / "combined_metagene.pdf",
+        bbox_inches="tight",
+        pad_inches=0.1,
+    )
     plt.close(figure)
 
     intronic_count = sum(
