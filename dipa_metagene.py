@@ -104,7 +104,7 @@ def add_exclusion(excluded_rows, source_row, stage, reason, details=""):
 
 
 def parse_pas_strand(pas_id):
-    """Extract + or - from an APAlyzer PASid such as chr1:+:12345."""
+    """Extract a legacy + or - label from a PASid when one is present."""
 
     match = re.search(r":([+-]):[^:]+$", str(pas_id).strip())
     if match is None:
@@ -278,12 +278,26 @@ def prepare_cdna_model(apa_row, transcript, gtf_database, min_side_bp):
         removed_exon_start = removed_exon["start_1based"]
         removed_exon_end = removed_exon["end_1based"]
 
+    legacy_pas_strand = apa_row["_legacy_pas_strand"]
+    if pd.isna(legacy_pas_strand) or legacy_pas_strand not in {"+", "-"}:
+        legacy_pas_strand = ""
+        legacy_strand_matches_annotation = "unavailable"
+    elif legacy_pas_strand == transcript.strand:
+        legacy_strand_matches_annotation = "yes"
+    else:
+        legacy_strand_matches_annotation = "no"
+
     gene_model = {
         "gene_symbol": str(apa_row["gene_symbol"]).strip(),
         "gene_id": transcript_gene_id,
         "transcript_id": transcript.id,
         "chromosome": transcript.seqid,
         "strand": transcript.strand,
+        "strand_source": "Ensembl_canonical_transcript",
+        "legacy_pas_strand": legacy_pas_strand,
+        "legacy_strand_matches_annotation": (
+            legacy_strand_matches_annotation
+        ),
         "PASid": apa_row["PASid"],
         "RED": float(apa_row["_RED_numeric"]),
         "p_adj": float(apa_row["_p_adj_numeric"]),
@@ -745,7 +759,11 @@ def main():
         .str.lower()
         .isin(TRUE_TEXT_VALUES)
     )
-    apa_results["_strand"] = apa_results["PASid"].apply(parse_pas_strand)
+    # PASid may be a label from an older genome assembly. Its strand is kept
+    # only for QC and is never used to select or orient the current transcript.
+    apa_results["_legacy_pas_strand"] = apa_results["PASid"].apply(
+        parse_pas_strand
+    )
 
     excluded_rows = []
     qualifying_indexes = []
@@ -810,16 +828,6 @@ def main():
                 row,
                 "APA_filtering",
                 "missing_gene_symbol",
-            )
-            continue
-
-        if row["_strand"] not in {"+", "-"}:
-            add_exclusion(
-                excluded_rows,
-                row,
-                "coordinate_validation",
-                "could_not_parse_strand_from_PASid",
-                f"PASid={row['PASid']}",
             )
             continue
 
@@ -907,7 +915,7 @@ def main():
 
     print("Indexing Ensembl_canonical transcripts...")
     canonical_by_gene_id = {}
-    canonical_by_symbol_location = {}
+    canonical_by_symbol_and_chromosome = {}
 
     for transcript in gtf_database.features_of_type("transcript"):
         transcript_tags = transcript.attributes.get("tag", [])
@@ -927,11 +935,11 @@ def main():
             symbol_key = (
                 transcript_gene_names[0],
                 transcript.seqid,
-                transcript.strand,
             )
-            canonical_by_symbol_location.setdefault(symbol_key, []).append(
-                transcript
-            )
+            canonical_by_symbol_and_chromosome.setdefault(
+                symbol_key,
+                [],
+            ).append(transcript)
 
     gene_models = []
 
@@ -953,18 +961,24 @@ def main():
                 transcript
                 for transcript in candidate_transcripts
                 if transcript.seqid == str(apa_row["chr"]).strip()
-                and transcript.strand == apa_row["_strand"]
             ]
         else:
             symbol_key = (
                 str(apa_row["gene_symbol"]).strip(),
                 str(apa_row["chr"]).strip(),
-                apa_row["_strand"],
             )
-            candidate_transcripts = canonical_by_symbol_location.get(
-                symbol_key,
-                [],
+            candidate_transcripts = (
+                canonical_by_symbol_and_chromosome.get(symbol_key, [])
             )
+
+        # The mapped coordinate and current annotation are authoritative. This
+        # span check also disambiguates same-name genes on opposite strands.
+        dipa_position = int(apa_row["_browser_start_numeric"])
+        candidate_transcripts = [
+            transcript
+            for transcript in candidate_transcripts
+            if int(transcript.start) <= dipa_position <= int(transcript.end)
+        ]
 
         if not candidate_transcripts:
             add_exclusion(
@@ -974,14 +988,18 @@ def main():
                 "no_matching_Ensembl_canonical_transcript",
                 (
                     f"gene={apa_row['gene_symbol']}; chr={apa_row['chr']}; "
-                    f"strand={apa_row['_strand']}"
+                    f"mapped_position={dipa_position}"
                 ),
             )
             continue
 
         if len(candidate_transcripts) > 1:
             transcript_ids = ", ".join(
-                transcript.id for transcript in candidate_transcripts
+                (
+                    f"{transcript.id}({transcript.strand}:"
+                    f"{transcript.start}-{transcript.end})"
+                )
+                for transcript in candidate_transcripts
             )
             add_exclusion(
                 excluded_rows,
@@ -1258,6 +1276,9 @@ def main():
         "transcript_id",
         "chromosome",
         "strand",
+        "strand_source",
+        "legacy_pas_strand",
+        "legacy_strand_matches_annotation",
         "PASid",
         "RED",
         "p_adj",
@@ -1510,6 +1531,14 @@ def main():
         gene_model["dipa_context"] == "exonic_exon_removed"
         for gene_model in gene_models
     )
+    legacy_strand_mismatch_count = sum(
+        gene_model["legacy_strand_matches_annotation"] == "no"
+        for gene_model in gene_models
+    )
+    legacy_strand_unavailable_count = sum(
+        gene_model["legacy_strand_matches_annotation"] == "unavailable"
+        for gene_model in gene_models
+    )
 
     filtering_counts = {
         "apa_rows_read": int(len(apa_results)),
@@ -1520,6 +1549,12 @@ def main():
         "final_genes": int(len(gene_models)),
         "final_intronic_dipas": int(intronic_count),
         "final_exonic_dipas": int(exonic_count),
+        "legacy_pas_strand_mismatches": int(
+            legacy_strand_mismatch_count
+        ),
+        "legacy_pas_strand_unavailable": int(
+            legacy_strand_unavailable_count
+        ),
     }
 
     run_parameters = {
@@ -1574,6 +1609,16 @@ def main():
     )
     print(f"  Intronic dIPAs retained: {intronic_count}")
     print(f"  Exonic dIPAs retained after exon removal: {exonic_count}")
+    if legacy_strand_mismatch_count:
+        print(
+            "  WARNING: Legacy PASid strand disagreed with the current "
+            f"canonical transcript for {legacy_strand_mismatch_count} gene(s)."
+        )
+    if legacy_strand_unavailable_count:
+        print(
+            "  Legacy PASid strand was unavailable for "
+            f"{legacy_strand_unavailable_count} gene(s)."
+        )
     print(f"  Genes excluded for short cDNA sides: {short_cdna_exclusions}")
     print(f"  Final genes used in every profile: {len(gene_models)}")
     print(

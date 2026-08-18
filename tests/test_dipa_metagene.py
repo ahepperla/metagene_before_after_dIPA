@@ -178,6 +178,7 @@ def make_apa_series(gene_symbol, pas_id, dipa_position, red=5.0):
             "_p_adj_numeric": 0.01,
             "_start_numeric": dipa_position - 1,
             "_browser_start_numeric": dipa_position,
+            "_legacy_pas_strand": dipa_metagene.parse_pas_strand(pas_id),
         }
     )
 
@@ -261,7 +262,7 @@ def write_apa_table(apa_path):
         },
         {
             "gene_symbol": "GeneExonic",
-            "PASid": "chr1:+:old_coordinate_3",
+            "PASid": "legacy_exonic_label_without_strand",
             "RED": 4.0,
             "pvalue": 0.001,
             "p_adj": 0.01,
@@ -278,7 +279,9 @@ def write_apa_table(apa_path):
         },
         {
             "gene_symbol": "GeneMinus",
-            "PASid": "chr1:-:old_coordinate_4",
+            # This deliberately disagrees with the current minus-strand GTF.
+            # The legacy PASid must remain QC-only after coordinate liftOver.
+            "PASid": "chr1:+:old_coordinate_4",
             "RED": 3.0,
             "pvalue": 0.001,
             "p_adj": 0.01,
@@ -624,6 +627,21 @@ def test_full_paired_run_with_multiple_treatments(tmp_path):
     ].iloc[0]
     assert selected_exonic["dipa_context"] == "exonic_exon_removed"
     assert selected_exonic["removed_exon_id"] == "E_EXONIC_2"
+    assert pd.isna(selected_exonic["legacy_pas_strand"])
+    assert (
+        selected_exonic["legacy_strand_matches_annotation"]
+        == "unavailable"
+    )
+
+    selected_minus = selected[
+        selected["gene_symbol"] == "GeneMinus"
+    ].iloc[0]
+    assert selected_minus["strand"] == "-"
+    assert selected_minus["strand_source"] == (
+        "Ensembl_canonical_transcript"
+    )
+    assert selected_minus["legacy_pas_strand"] == "+"
+    assert selected_minus["legacy_strand_matches_annotation"] == "no"
 
     excluded = pd.read_csv(output_path / "excluded_genes.tsv", sep="\t")
     exclusion_reasons = set(excluded["exclusion_reason"])
@@ -646,6 +664,19 @@ def test_full_paired_run_with_multiple_treatments(tmp_path):
     assert run_parameters["parameters"]["paired_controls"] is True
     assert run_parameters["parameters"]["threads_used"] == 2
     assert run_parameters["filtering_counts"]["final_genes"] == 3
+    assert (
+        run_parameters["filtering_counts"][
+            "legacy_pas_strand_mismatches"
+        ]
+        == 1
+    )
+    assert (
+        run_parameters["filtering_counts"][
+            "legacy_pas_strand_unavailable"
+        ]
+        == 1
+    )
+    assert "Legacy PASid strand disagreed" in completed.stdout
 
 
 def test_full_unpaired_run_uses_mean_control(tmp_path):

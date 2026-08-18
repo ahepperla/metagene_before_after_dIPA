@@ -118,14 +118,20 @@ genomic start coordinate.
 `start` and `end` must be zero-based, half-open BED coordinates describing one
 base. `browser_start_1based` must equal `start + 1`.
 
-The strand is read from `PASid`, for example:
+`PASid` is treated as a legacy identifier. It may contain an older chromosome,
+coordinate, or strand, for example:
 
 ```text
 chr1:+:123456
 chr2:-:987654
 ```
 
-The coordinate inside `PASid` is not used.
+Nothing inside `PASid` is used to match or orient the current transcript. The
+script records a parseable legacy strand for QC only.
+
+This matters after liftOver or when moving the workflow to another species or
+assembly. A chain can map a region through a reverse-orientation alignment, so
+the old strand label is not assumed to be authoritative.
 
 ### GENCODE GTF
 
@@ -136,8 +142,14 @@ tag "Ensembl_canonical"
 ```
 
 The example APAlyzer table contains gene symbols, so the script normally
-matches `gene_symbol` to GTF `gene_name`, chromosome, and strand. If the APA
-table contains a nonblank `gene_id`, that stable identifier is preferred.
+matches `gene_symbol` to GTF `gene_name`, the mapped chromosome, and the mapped
+coordinate inside the canonical transcript span. If the APA table contains a
+nonblank `gene_id`, that stable identifier is preferred.
+
+The current `Ensembl_canonical` transcript supplies the authoritative strand.
+That strand controls exon order and BigWig signal orientation. If a parseable
+legacy PASid strand disagrees, the gene is retained and the mismatch is
+reported rather than used as an exclusion.
 
 The first run creates a reusable gffutils SQLite database in the output
 directory. Later runs reuse it, which saves substantial time on an HPC.
@@ -296,7 +308,8 @@ The output directory contains:
 ### Tables
 
 - `selected_up_genes.tsv`: final genes, canonical transcripts, dIPA context,
-  removed exon information, and cDNA lengths
+  removed exon information, cDNA lengths, current annotation strand, and
+  legacy-strand QC
 - `excluded_genes.tsv`: every filtered or excluded row and the reason
 - `per_gene_log2fc.tsv`: gene-level log2FC for each treatment replicate and bin
 - `replicate_profiles.tsv`: gene-averaged profile for every treatment replicate
@@ -323,6 +336,11 @@ Check that:
 
 The APA coordinates and GTF may use different genome assemblies, or the dIPA
 may have been assigned through a different transcript model.
+
+### Legacy PASid strand disagrees with annotation
+
+This is a warning, not an exclusion. The script uses the strand from the
+current canonical transcript and records the old PASid strand only for QC.
 
 ### Insufficient cDNA
 
