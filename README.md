@@ -142,13 +142,19 @@ matches `gene_symbol` to GTF `gene_name`, the mapped chromosome, and the mapped
 coordinate inside the canonical transcript span. If the APA table contains a
 nonblank `gene_id`, that stable identifier is preferred.
 
+Canonical transcripts are resolved before selecting one dIPA per gene. The
+resolved GTF `gene_id` defines a gene, so separate genes that share a symbol
+are not collapsed.
+
 The current `Ensembl_canonical` transcript supplies the authoritative strand.
 That strand controls exon order and BigWig signal orientation. If a parseable
 legacy PASid strand disagrees, the gene is retained and the mismatch is
 reported rather than used as an exclusion.
 
 The first run creates a reusable gffutils SQLite database in the output
-directory. Later runs reuse it, which saves substantial time on an HPC.
+directory. It also writes a metadata JSON file containing the source GTF's
+SHA-256 checksum. Later runs reuse the database only when the current GTF
+checksum matches, which prevents accidental reuse across genome assemblies.
 
 Use `--rebuild-gtf-db` after changing the GTF. Alternatively, place the
 database at a specific shared path with `--gtf-db`.
@@ -169,6 +175,11 @@ drugB_2	drugB	2	treatment	2	/path/drugB_2.bw
 
 `role` must be `control` or `treatment`. Multiple treatment conditions are
 allowed.
+
+`replicate` must be nonblank and unique within each role and condition. For
+example, a treatment condition cannot contain two rows both labeled replicate
+`1`. This prevents duplicate rows from being counted as independent
+biological replicates in the mean and SD.
 
 Relative BigWig paths are resolved relative to the sample sheet's directory.
 
@@ -192,13 +203,15 @@ Do not mix paired and unpaired samples in one run.
 BigWigs must contain:
 
 - nonnegative signal
+- finite signal
 - linear-scale signal
 - comparable normalization across samples
 
 Signed tracks or tracks that are already log2 transformed cannot be used with
 the ratio calculation in this script.
 
-Missing BigWig positions are treated as zero.
+Missing BigWig positions (`NaN`) are treated as zero. Positive or negative
+infinity causes the run to stop.
 
 ## Pseudocount
 
@@ -307,7 +320,8 @@ The output directory contains:
   removed exon information, cDNA lengths, current annotation strand, and
   legacy-strand QC
 - `excluded_genes.tsv`: every filtered or excluded row and the reason
-- `per_gene_log2fc.tsv`: gene-level log2FC for each treatment replicate and bin
+- `per_gene_log2fc.tsv`: gene-level log2FC for each treatment replicate and
+  bin, with gene, transcript, and PAS identifiers
 - `replicate_profiles.tsv`: gene-averaged profile for every treatment replicate
 - `treatment_summary.tsv`: treatment mean and per-bin replicate SD
 
@@ -316,6 +330,7 @@ The output directory contains:
 - `run_parameters.json`: paths, parameters, package versions, thread count,
   treatment counts, and filtering totals
 - `*.gffutils.db`: reusable GTF database unless `--gtf-db` points elsewhere
+- `*.gffutils.db.metadata.json`: source GTF path, size, and SHA-256 checksum
 
 ## Common Errors
 
@@ -355,11 +370,18 @@ Check naming such as `chr1` versus `1` and confirm genome assemblies.
 
 ### Existing GTF database is wrong
 
-Rerun with:
+The script refuses to reuse a database when its metadata is absent or its
+source GTF checksum differs. Rerun with:
 
 ```bash
 --rebuild-gtf-db
 ```
+
+### Duplicate replicate label
+
+Give every biological replicate a unique, nonblank `replicate` value within
+its role and condition. Treatment and control rows may both use replicate `1`
+because their roles differ.
 
 ## Tests
 

@@ -95,6 +95,30 @@ def write_synthetic_gtf(gtf_path):
             'gene_name "GeneMinus"; exon_id "E_MINUS_3";'
         ),
         (
+            'chr1\ttest\tgene\t2601\t2990\t.\t+\t.\t'
+            'gene_id "G_SHARED_1"; gene_name "SharedGene";'
+        ),
+        (
+            'chr1\ttest\ttranscript\t2601\t2990\t.\t+\t.\t'
+            'gene_id "G_SHARED_1"; transcript_id "TX_SHARED_1"; '
+            'gene_name "SharedGene"; tag "Ensembl_canonical";'
+        ),
+        (
+            'chr1\ttest\texon\t2601\t2700\t.\t+\t.\t'
+            'gene_id "G_SHARED_1"; transcript_id "TX_SHARED_1"; '
+            'gene_name "SharedGene"; exon_id "E_SHARED_1A";'
+        ),
+        (
+            'chr1\ttest\texon\t2751\t2850\t.\t+\t.\t'
+            'gene_id "G_SHARED_1"; transcript_id "TX_SHARED_1"; '
+            'gene_name "SharedGene"; exon_id "E_SHARED_1B";'
+        ),
+        (
+            'chr1\ttest\texon\t2891\t2990\t.\t+\t.\t'
+            'gene_id "G_SHARED_1"; transcript_id "TX_SHARED_1"; '
+            'gene_name "SharedGene"; exon_id "E_SHARED_1C";'
+        ),
+        (
             'chr1\ttest\tgene\t3001\t3500\t.\t+\t.\t'
             'gene_id "G_SHORT"; gene_name "GeneShort";'
         ),
@@ -117,6 +141,30 @@ def write_synthetic_gtf(gtf_path):
             'chr1\ttest\texon\t3401\t3500\t.\t+\t.\t'
             'gene_id "G_SHORT"; transcript_id "TX_SHORT"; '
             'gene_name "GeneShort"; exon_id "E_SHORT_3";'
+        ),
+        (
+            'chr1\ttest\tgene\t3601\t3990\t.\t+\t.\t'
+            'gene_id "G_SHARED_2"; gene_name "SharedGene";'
+        ),
+        (
+            'chr1\ttest\ttranscript\t3601\t3990\t.\t+\t.\t'
+            'gene_id "G_SHARED_2"; transcript_id "TX_SHARED_2"; '
+            'gene_name "SharedGene"; tag "Ensembl_canonical";'
+        ),
+        (
+            'chr1\ttest\texon\t3601\t3700\t.\t+\t.\t'
+            'gene_id "G_SHARED_2"; transcript_id "TX_SHARED_2"; '
+            'gene_name "SharedGene"; exon_id "E_SHARED_2A";'
+        ),
+        (
+            'chr1\ttest\texon\t3751\t3850\t.\t+\t.\t'
+            'gene_id "G_SHARED_2"; transcript_id "TX_SHARED_2"; '
+            'gene_name "SharedGene"; exon_id "E_SHARED_2B";'
+        ),
+        (
+            'chr1\ttest\texon\t3891\t3990\t.\t+\t.\t'
+            'gene_id "G_SHARED_2"; transcript_id "TX_SHARED_2"; '
+            'gene_name "SharedGene"; exon_id "E_SHARED_2C";'
         ),
         (
             'chr1\ttest\tgene\t4001\t4520\t.\t+\t.\t'
@@ -224,6 +272,18 @@ def write_negative_bigwig(bigwig_path, chromosome_length=5000):
     bigwig_file.close()
 
 
+def write_infinite_bigwig(bigwig_path, chromosome_length=5000):
+    bigwig_file = pyBigWig.open(str(bigwig_path), "w")
+    bigwig_file.addHeader([("chr1", chromosome_length)])
+    bigwig_file.addEntries(
+        ["chr1"],
+        [0],
+        ends=[chromosome_length],
+        values=[float("inf")],
+    )
+    bigwig_file.close()
+
+
 def write_apa_table(apa_path):
     rows = [
         {
@@ -311,6 +371,40 @@ def write_apa_table(apa_path):
             "browser_start_1based": 4300,
             "browser_end_1based": 4300,
             "browser_region": "chr1:4300-4300",
+            "pas_coordinate_match": "TRUE",
+        },
+        {
+            "gene_symbol": "SharedGene",
+            "PASid": "chr1:+:shared_coordinate_1",
+            "RED": 3.5,
+            "pvalue": 0.001,
+            "p_adj": 0.01,
+            "APAreg": "UP",
+            "APAreg_original": "UP",
+            "significance_for_plot": 0.01,
+            "chr": "chr1",
+            "start": 2869,
+            "end": 2870,
+            "browser_start_1based": 2870,
+            "browser_end_1based": 2870,
+            "browser_region": "chr1:2870-2870",
+            "pas_coordinate_match": "TRUE",
+        },
+        {
+            "gene_symbol": "SharedGene",
+            "PASid": "chr1:+:shared_coordinate_2",
+            "RED": 3.0,
+            "pvalue": 0.001,
+            "p_adj": 0.01,
+            "APAreg": "UP",
+            "APAreg_original": "UP",
+            "significance_for_plot": 0.01,
+            "chr": "chr1",
+            "start": 3869,
+            "end": 3870,
+            "browser_start_1based": 3870,
+            "browser_end_1based": 3870,
+            "browser_region": "chr1:3870-3870",
             "pas_coordinate_match": "TRUE",
         },
         {
@@ -404,6 +498,29 @@ def run_script(
     return completed, output_path
 
 
+def make_basic_paired_sample_rows(tmp_path):
+    write_constant_bigwig(tmp_path / "basic_control.bw", 1)
+    write_constant_bigwig(tmp_path / "basic_treatment.bw", 2)
+    return [
+        {
+            "sample_id": "control_1",
+            "condition": "control",
+            "replicate": "1",
+            "role": "control",
+            "pair_id": "1",
+            "bigwig": "basic_control.bw",
+        },
+        {
+            "sample_id": "drugA_1",
+            "condition": "drugA",
+            "replicate": "1",
+            "role": "treatment",
+            "pair_id": "1",
+            "bigwig": "basic_treatment.bw",
+        },
+    ]
+
+
 def test_parse_pas_strand_and_gene_id_normalization():
     assert dipa_metagene.parse_pas_strand("chr1:+:123") == "+"
     assert dipa_metagene.parse_pas_strand("chrX:-:999") == "-"
@@ -435,6 +552,57 @@ def test_thread_count_respects_request_and_slurm(monkeypatch):
 
     with pytest.raises(ValueError, match="zero or a positive"):
         dipa_metagene.choose_thread_count(-1, 5)
+
+
+def test_gtf_database_rejects_a_different_source_gtf(tmp_path):
+    gtf_path = tmp_path / "annotation.gtf"
+    database_path = tmp_path / "annotation.db"
+    write_synthetic_gtf(gtf_path)
+
+    database = dipa_metagene.create_or_open_gtf_database(
+        gtf_path,
+        database_path,
+        False,
+    )
+    database.conn.close()
+
+    metadata_path = tmp_path / "annotation.db.metadata.json"
+    assert metadata_path.is_file()
+
+    gtf_path.write_text(
+        gtf_path.read_text(encoding="utf-8") + "# changed annotation\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="different GTF"):
+        dipa_metagene.create_or_open_gtf_database(
+            gtf_path,
+            database_path,
+            False,
+        )
+
+
+def test_gtf_database_rejects_missing_source_metadata(tmp_path):
+    gtf_path = tmp_path / "annotation.gtf"
+    database_path = tmp_path / "annotation.db"
+    write_synthetic_gtf(gtf_path)
+    gffutils.create_db(
+        str(gtf_path),
+        dbfn=str(database_path),
+        force=True,
+        keep_order=True,
+        merge_strategy="merge",
+        sort_attribute_values=True,
+        disable_infer_genes=True,
+        disable_infer_transcripts=True,
+    )
+
+    with pytest.raises(ValueError, match="no source metadata"):
+        dipa_metagene.create_or_open_gtf_database(
+            gtf_path,
+            database_path,
+            False,
+        )
 
 
 def test_intronic_exonic_minus_and_short_cdna_models(tmp_path):
@@ -555,6 +723,119 @@ def test_negative_bigwig_signal_is_rejected(tmp_path):
         )
 
 
+def test_infinite_bigwig_signal_is_rejected(tmp_path):
+    _, database = open_synthetic_gtf_database(tmp_path)
+    plus_row = make_apa_series("GenePlus", "chr1:+:old", 350)
+    plus_model, reason, _ = dipa_metagene.prepare_cdna_model(
+        plus_row,
+        database["TX_PLUS"],
+        database,
+        2,
+    )
+    assert reason is None
+
+    bigwig_path = tmp_path / "infinite.bw"
+    write_infinite_bigwig(bigwig_path)
+    sample_record = {
+        "sample_id": "infinite_sample",
+        "_bigwig_path": str(bigwig_path),
+    }
+
+    with pytest.raises(ValueError, match="Infinite BigWig value"):
+        dipa_metagene.extract_sample_profiles(
+            sample_record,
+            [plus_model],
+            2,
+        )
+
+
+def test_blank_and_duplicate_replicates_are_rejected(tmp_path):
+    blank_rows = make_basic_paired_sample_rows(tmp_path)
+    blank_rows[1]["replicate"] = ""
+
+    blank_run, _ = run_script(
+        tmp_path,
+        blank_rows,
+        "blank_replicate_output",
+    )
+    assert blank_run.returncode == 1
+    assert "blank replicate" in blank_run.stderr
+
+    write_constant_bigwig(tmp_path / "duplicate_treatment.bw", 3)
+    duplicate_rows = make_basic_paired_sample_rows(tmp_path)
+    duplicate_rows.append(
+        {
+            "sample_id": "drugA_duplicate",
+            "condition": "drugA",
+            "replicate": "1",
+            "role": "treatment",
+            "pair_id": "1",
+            "bigwig": "duplicate_treatment.bw",
+        }
+    )
+
+    duplicate_run, _ = run_script(
+        tmp_path,
+        duplicate_rows,
+        "duplicate_replicate_output",
+    )
+    assert duplicate_run.returncode == 1
+    assert "Replicate labels must be unique" in duplicate_run.stderr
+
+
+@pytest.mark.parametrize("invalid_pseudocount", ["nan", "inf"])
+def test_nonfinite_pseudocount_is_rejected(
+    tmp_path,
+    invalid_pseudocount,
+):
+    sample_rows = make_basic_paired_sample_rows(tmp_path)
+    completed, _ = run_script(
+        tmp_path,
+        sample_rows,
+        f"invalid_pseudocount_{invalid_pseudocount}",
+        extra_arguments=["--pseudocount", invalid_pseudocount],
+    )
+
+    assert completed.returncode == 1
+    assert "pseudocount must be a finite number" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("column_name", "invalid_value", "expected_message"),
+    [
+        ("RED", "inf", "contains an infinite or missing numeric value"),
+        ("p_adj", "-0.1", "must contain values between 0 and 1"),
+        ("p_adj", "1.1", "must contain values between 0 and 1"),
+        (
+            "p_adj",
+            "inf",
+            "contains an infinite or missing numeric value",
+        ),
+    ],
+)
+def test_invalid_apalyzer_numeric_values_are_rejected(
+    tmp_path,
+    column_name,
+    invalid_value,
+    expected_message,
+):
+    apa_path = tmp_path / "apa.tsv"
+    write_apa_table(apa_path)
+    apa_table = pd.read_csv(apa_path, sep="\t", dtype=str)
+    apa_table.loc[0, column_name] = invalid_value
+    apa_table.to_csv(apa_path, sep="\t", index=False)
+
+    sample_rows = make_basic_paired_sample_rows(tmp_path)
+    completed, _ = run_script(
+        tmp_path,
+        sample_rows,
+        f"invalid_{column_name}",
+    )
+
+    assert completed.returncode == 1
+    assert expected_message in completed.stderr
+
+
 def test_full_paired_run_with_multiple_treatments(tmp_path):
     signal_values = {
         "control_1": 1,
@@ -606,6 +887,7 @@ def test_full_paired_run_with_multiple_treatments(tmp_path):
         "replicate_profiles.tsv",
         "treatment_summary.tsv",
         "run_parameters.json",
+        "synthetic.gtf.gffutils.db.metadata.json",
     ]
     for filename in expected_files:
         assert (output_path / filename).is_file()
@@ -619,7 +901,16 @@ def test_full_paired_run_with_multiple_treatments(tmp_path):
         "GenePlus",
         "GeneExonic",
         "GeneMinus",
+        "SharedGene",
     }
+    assert len(selected) == 5
+    shared_gene_ids = set(
+        selected.loc[
+            selected["gene_symbol"] == "SharedGene",
+            "gene_id",
+        ]
+    )
+    assert shared_gene_ids == {"G_SHARED_1", "G_SHARED_2"}
     selected_plus = selected[selected["gene_symbol"] == "GenePlus"].iloc[0]
     assert selected_plus["RED"] == pytest.approx(5.0)
     selected_exonic = selected[
@@ -658,12 +949,30 @@ def test_full_paired_run_with_multiple_treatments(tmp_path):
     assert np.allclose(drug_b["mean_log2fc"], 0.0)
     assert np.allclose(drug_b["sd_log2fc"], 0.0)
 
+    per_gene = pd.read_csv(output_path / "per_gene_log2fc.tsv", sep="\t")
+    replicate_profiles = pd.read_csv(
+        output_path / "replicate_profiles.tsv",
+        sep="\t",
+    )
+    assert set(per_gene["replicate"].astype(str)) == {"1", "2"}
+    assert set(
+        per_gene.loc[
+            per_gene["gene_symbol"] == "SharedGene",
+            "gene_id",
+        ]
+    ) == {"G_SHARED_1", "G_SHARED_2"}
+    assert set(replicate_profiles["replicate"].astype(str)) == {"1", "2"}
+
     run_parameters = json.loads(
         (output_path / "run_parameters.json").read_text(encoding="utf-8")
     )
     assert run_parameters["parameters"]["paired_controls"] is True
     assert run_parameters["parameters"]["threads_used"] == 2
-    assert run_parameters["filtering_counts"]["final_genes"] == 3
+    assert run_parameters["filtering_counts"]["final_genes"] == 5
+    assert (
+        run_parameters["filtering_counts"]["unique_significant_up_genes"]
+        == 5
+    )
     assert (
         run_parameters["filtering_counts"][
             "legacy_pas_strand_mismatches"

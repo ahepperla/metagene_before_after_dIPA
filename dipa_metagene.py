@@ -4,6 +4,7 @@ Create exon-only metagene profiles around significant UP dIPAs.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -114,11 +115,30 @@ def normalize_gene_id(gene_id):
     return str(gene_id).strip().split(".")[0]
 
 
+def calculate_file_sha256(file_path):
+    """Calculate a SHA-256 checksum without loading the whole file into memory."""
+
+    checksum = hashlib.sha256()
+    with file_path.open("rb") as input_file:
+        while True:
+            file_chunk = input_file.read(1024 * 1024)
+            if not file_chunk:
+                break
+            checksum.update(file_chunk)
+    return checksum.hexdigest()
+
+
 def create_or_open_gtf_database(gtf_path, database_path, rebuild_database):
     """Create the reusable gffutils database, or open it when it already exists."""
 
+    metadata_path = database_path.with_name(
+        database_path.name + ".metadata.json"
+    )
+
     if rebuild_database and database_path.exists():
         database_path.unlink()
+    if rebuild_database and metadata_path.exists():
+        metadata_path.unlink()
 
     if not database_path.exists():
         print(f"Creating GTF database: {database_path}")
@@ -134,7 +154,42 @@ def create_or_open_gtf_database(gtf_path, database_path, rebuild_database):
             disable_infer_transcripts=True,
             verbose=False,
         )
+
+        database_metadata = {
+            "gtf_path": str(gtf_path),
+            "gtf_size_bytes": gtf_path.stat().st_size,
+            "gtf_sha256": calculate_file_sha256(gtf_path),
+        }
+        with metadata_path.open("w", encoding="utf-8") as metadata_file:
+            json.dump(database_metadata, metadata_file, indent=2)
     else:
+        if not metadata_path.is_file():
+            raise ValueError(
+                f"The existing GTF database has no source metadata: "
+                f"{database_path}. Rebuild it with --rebuild-gtf-db."
+            )
+
+        try:
+            with metadata_path.open("r", encoding="utf-8") as metadata_file:
+                database_metadata = json.load(metadata_file)
+        except (json.JSONDecodeError, OSError) as error:
+            raise ValueError(
+                f"Could not read GTF database metadata: {metadata_path}. "
+                "Rebuild the database with --rebuild-gtf-db."
+            ) from error
+
+        current_gtf_checksum = calculate_file_sha256(gtf_path)
+        stored_gtf_checksum = database_metadata.get("gtf_sha256")
+
+        if current_gtf_checksum != stored_gtf_checksum:
+            stored_gtf_path = database_metadata.get("gtf_path", "unknown")
+            raise ValueError(
+                f"The existing GTF database was created from a different GTF "
+                f"file. Database source: {stored_gtf_path}. Current GTF: "
+                f"{gtf_path}. Use --rebuild-gtf-db or choose a different "
+                f"--gtf-db path."
+            )
+
         print(f"Reusing GTF database: {database_path}")
 
     return gffutils.FeatureDB(str(database_path), keep_order=True)
@@ -367,7 +422,15 @@ def extract_oriented_exon_values(
             numpy=True,
         )
         exon_values = np.asarray(exon_values, dtype=float)
-        exon_values = np.nan_to_num(exon_values, nan=0.0)
+
+        if np.any(np.isinf(exon_values)):
+            raise ValueError(
+                f"Infinite BigWig value found for sample {sample_id}, "
+                f"gene {gene_model['gene_symbol']}, exon "
+                f"{exon['exon_id']}. BigWig signal must be finite."
+            )
+
+        exon_values = np.where(np.isnan(exon_values), 0.0, exon_values)
 
         if np.any(exon_values < 0):
             raise ValueError(
@@ -505,6 +568,15 @@ def write_per_gene_log2fc(
         chunk_gene_symbols = [
             gene_model["gene_symbol"] for gene_model in chunk_models
         ]
+        chunk_gene_ids = [
+            gene_model["gene_id"] for gene_model in chunk_models
+        ]
+        chunk_transcript_ids = [
+            gene_model["transcript_id"] for gene_model in chunk_models
+        ]
+        chunk_pas_ids = [
+            gene_model["PASid"] for gene_model in chunk_models
+        ]
 
         output_frame = pd.DataFrame(
             {
@@ -512,8 +584,21 @@ def write_per_gene_log2fc(
                     chunk_gene_symbols,
                     total_positions,
                 ),
+                "gene_id": np.repeat(
+                    chunk_gene_ids,
+                    total_positions,
+                ),
+                "transcript_id": np.repeat(
+                    chunk_transcript_ids,
+                    total_positions,
+                ),
+                "PASid": np.repeat(
+                    chunk_pas_ids,
+                    total_positions,
+                ),
                 "condition": treatment_record["condition"],
                 "sample_id": treatment_record["sample_id"],
+                "replicate": treatment_record["replicate"],
                 "pair_id": treatment_record["pair_id"],
                 "position_index": np.tile(
                     position_indexes,
@@ -644,10 +729,17 @@ def parse_arguments():
 def main():
     args = parse_arguments()
 
-    if args.pseudocount <= 0:
-        raise ValueError("--pseudocount must be greater than zero.")
-    if not 0 < args.adjusted_pvalue <= 1:
-        raise ValueError("--adjusted-pvalue must be greater than 0 and at most 1.")
+    if not np.isfinite(args.pseudocount) or args.pseudocount <= 0:
+        raise ValueError(
+            "--pseudocount must be a finite number greater than zero."
+        )
+    if (
+        not np.isfinite(args.adjusted_pvalue)
+        or not 0 <= args.adjusted_pvalue <= 1
+    ):
+        raise ValueError(
+            "--adjusted-pvalue must be a finite number between 0 and 1."
+        )
     if args.bins_per_side <= 0:
         raise ValueError("--bins-per-side must be a positive integer.")
     if args.min_side_bp <= 0:
@@ -720,6 +812,29 @@ def main():
             raise ValueError(
                 f"APAlyzer column {input_column} contains a nonnumeric value."
             ) from error
+
+        if not np.isfinite(apa_results[helper_column].to_numpy()).all():
+            raise ValueError(
+                f"APAlyzer column {input_column} contains an infinite or "
+                "missing numeric value."
+            )
+
+    invalid_adjusted_pvalues = (
+        (apa_results["_p_adj_numeric"] < 0)
+        | (apa_results["_p_adj_numeric"] > 1)
+    )
+    if invalid_adjusted_pvalues.any():
+        invalid_values = sorted(
+            apa_results.loc[
+                invalid_adjusted_pvalues,
+                "p_adj",
+            ].unique()
+        )
+        raise ValueError(
+            "APAlyzer column p_adj must contain values between 0 and 1. "
+            "Invalid values: "
+            + ", ".join(invalid_values[:10])
+        )
 
     for integer_helper_column in [
         "_start_numeric",
@@ -866,37 +981,6 @@ def main():
     qualifying_rows["_gene_symbol_clean"] = (
         qualifying_rows["gene_symbol"].astype(str).str.strip()
     )
-    qualifying_rows = qualifying_rows.sort_values(
-        by=[
-            "_gene_symbol_clean",
-            "_RED_numeric",
-            "_p_adj_numeric",
-            "_start_numeric",
-        ],
-        ascending=[True, False, True, True],
-        kind="mergesort",
-    )
-
-    selected_apa_indexes = []
-    for gene_symbol, gene_rows in qualifying_rows.groupby(
-        "_gene_symbol_clean",
-        sort=False,
-    ):
-        selected_apa_indexes.append(gene_rows.index[0])
-
-        for additional_index in gene_rows.index[1:]:
-            add_exclusion(
-                excluded_rows,
-                qualifying_rows.loc[additional_index],
-                "representative_dipa_selection",
-                "additional_significant_PAS_for_gene",
-                (
-                    f"gene={gene_symbol}; selected highest RED site "
-                    f"{gene_rows.iloc[0]['PASid']}"
-                ),
-            )
-
-    selected_apa_rows = qualifying_rows.loc[selected_apa_indexes].copy()
 
     gtf_database = create_or_open_gtf_database(
         gtf_path,
@@ -932,13 +1016,13 @@ def main():
                 [],
             ).append(transcript)
 
-    gene_models = []
+    resolved_apa_rows = []
 
-    for _, apa_row in selected_apa_rows.iterrows():
+    for _, apa_row in qualifying_rows.iterrows():
         candidate_transcripts = []
         input_gene_id = ""
 
-        if "gene_id" in selected_apa_rows.columns:
+        if "gene_id" in qualifying_rows.columns:
             input_gene_id = str(apa_row["gene_id"]).strip()
             if input_gene_id.lower() in {"", ".", "na", "nan", "none"}:
                 input_gene_id = ""
@@ -1002,6 +1086,78 @@ def main():
             continue
 
         canonical_transcript = candidate_transcripts[0]
+        transcript_gene_ids = canonical_transcript.attributes.get(
+            "gene_id",
+            [],
+        )
+        if not transcript_gene_ids:
+            add_exclusion(
+                excluded_rows,
+                apa_row,
+                "canonical_transcript_selection",
+                "canonical_transcript_missing_gene_id",
+                f"transcript={canonical_transcript.id}",
+            )
+            continue
+
+        resolved_apa_rows.append(
+            {
+                "apa_row": apa_row,
+                "transcript": canonical_transcript,
+                "resolved_gene_id": normalize_gene_id(
+                    transcript_gene_ids[0]
+                ),
+            }
+        )
+
+    if not resolved_apa_rows:
+        excluded_output_path = output_directory / "excluded_genes.tsv"
+        pd.DataFrame(excluded_rows).to_csv(
+            excluded_output_path,
+            sep="\t",
+            index=False,
+        )
+        raise ValueError(
+            "No significant UP dIPAs matched a unique canonical transcript. "
+            f"QC was written to {excluded_output_path}"
+        )
+
+    resolved_apa_rows.sort(
+        key=lambda resolved_row: (
+            resolved_row["resolved_gene_id"],
+            -float(resolved_row["apa_row"]["_RED_numeric"]),
+            float(resolved_row["apa_row"]["_p_adj_numeric"]),
+            int(resolved_row["apa_row"]["_start_numeric"]),
+        )
+    )
+
+    selected_resolved_rows = []
+    resolved_rows_by_gene = {}
+    for resolved_row in resolved_apa_rows:
+        resolved_rows_by_gene.setdefault(
+            resolved_row["resolved_gene_id"],
+            [],
+        ).append(resolved_row)
+
+    for resolved_gene_id, gene_rows in resolved_rows_by_gene.items():
+        selected_resolved_rows.append(gene_rows[0])
+
+        for additional_row in gene_rows[1:]:
+            add_exclusion(
+                excluded_rows,
+                additional_row["apa_row"],
+                "representative_dipa_selection",
+                "additional_significant_PAS_for_gene",
+                (
+                    f"gene_id={resolved_gene_id}; selected highest RED site "
+                    f"{gene_rows[0]['apa_row']['PASid']}"
+                ),
+            )
+
+    gene_models = []
+    for resolved_row in selected_resolved_rows:
+        apa_row = resolved_row["apa_row"]
+        canonical_transcript = resolved_row["transcript"]
         gene_model, exclusion_reason, exclusion_details = prepare_cdna_model(
             apa_row,
             canonical_transcript,
@@ -1070,6 +1226,8 @@ def main():
         )
     if sample_sheet["condition"].eq("").any():
         raise ValueError("Sample sheet contains a blank condition.")
+    if sample_sheet["replicate"].eq("").any():
+        raise ValueError("Sample sheet contains a blank replicate value.")
 
     sample_sheet["role"] = sample_sheet["role"].str.lower()
     invalid_roles = sorted(
@@ -1079,6 +1237,32 @@ def main():
         raise ValueError(
             "Sample sheet role must be control or treatment. Invalid values: "
             + ", ".join(invalid_roles)
+        )
+
+    duplicated_replicates = sample_sheet.duplicated(
+        subset=["role", "condition", "replicate"],
+        keep=False,
+    )
+    if duplicated_replicates.any():
+        duplicate_labels = (
+            sample_sheet.loc[
+                duplicated_replicates,
+                ["role", "condition", "replicate"],
+            ]
+            .drop_duplicates()
+            .apply(
+                lambda row: (
+                    f"{row['role']}:{row['condition']}:"
+                    f"{row['replicate']}"
+                ),
+                axis=1,
+            )
+            .tolist()
+        )
+        raise ValueError(
+            "Replicate labels must be unique within each role and condition. "
+            "Duplicates: "
+            + ", ".join(duplicate_labels)
         )
 
     control_samples = sample_sheet[sample_sheet["role"] == "control"]
@@ -1381,6 +1565,7 @@ def main():
                 {
                     "condition": condition_name,
                     "sample_id": treatment_record["sample_id"],
+                    "replicate": treatment_record["replicate"],
                     "pair_id": treatment_record["pair_id"],
                     "position_index": position_indexes,
                     "region": regions,
@@ -1535,7 +1720,7 @@ def main():
         "apa_rows_read": int(len(apa_results)),
         "significant_up_pas_rows": int(len(qualifying_rows)),
         "unique_significant_up_genes": int(
-            qualifying_rows["_gene_symbol_clean"].nunique()
+            len(resolved_rows_by_gene)
         ),
         "final_genes": int(len(gene_models)),
         "final_intronic_dipas": int(intronic_count),
@@ -1596,7 +1781,7 @@ def main():
     print(f"  Significant UP PAS rows: {len(qualifying_rows)}")
     print(
         "  Unique significant UP genes: "
-        f"{qualifying_rows['_gene_symbol_clean'].nunique()}"
+        f"{len(resolved_rows_by_gene)}"
     )
     print(f"  Intronic dIPAs retained: {intronic_count}")
     print(f"  Exonic dIPAs retained after exon removal: {exonic_count}")
